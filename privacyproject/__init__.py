@@ -1,4 +1,5 @@
 name = 'privacyproject'
-all = ['discrete']
+all = ['discrete', 'plotting']
 
 from . import discrete
+from . import plotting
