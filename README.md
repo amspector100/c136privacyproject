@@ -10,6 +10,14 @@ go to your terminal and run:
 or 
 ``python -m unittest``
 
+# To run experiments
+
+Edit the kwargs in main.py and then run
+``python3 main.py``
+If it's taking a while, you can run
+``python3 main.py --profile``
+to see which function calls are slowing it down.
+
 
 # Todo
 
