@@ -111,6 +111,7 @@ class TestLocation(unittest.TestCase):
 
 		n_players = 5
 		locations = [-1, -.5, 0, .1, .2, .3, .4, .5, .6]
+		L = len(locations)
 		reports = [0, 1, 3, 6, 8]
 
 		batch = 100
@@ -130,6 +131,33 @@ class TestLocation(unittest.TestCase):
 			msg = 'Index/location relationship is off after sampling'
 		)
 
+		# Test the same thing but for skewed sampling
+		np.random.seed(110)
+		batch = 1000
+		selections2, locs2 = mechsim.sample_locations(batch = batch, dist = 'skewed')
+
+		self.assertEqual(
+			selections2.shape[0], n_players,
+			msg = 'LocationSim samples incorrectly for "skewed" dist (wrong num players)'
+		)
+		self.assertEqual(
+			selections2.shape[1], batch,
+			msg = 'LocationSim samples incorrectly for "skewed" dist (wrong num batches)'
+		)
+		self.assertEqual(
+			locations[selections2[0, 0]], locs2[0, 0],
+			msg = 'Index/location relationship is off after sampling for "skewed" dist'
+		)
+
+		# Check to make sure dist is properly skewed
+		counts2 = np.bincount(selections2.flatten(), minlength = L).tolist()
+		self.assertEqual(
+			counts2, sorted(counts2),
+			msg = 'Skewed sampling is not properly skewed'
+		)
+
+
+
 	def test_calc_expectations(self):
 
 		# Create n_players, locations, etc
@@ -140,7 +168,7 @@ class TestLocation(unittest.TestCase):
 		# Calc expectation
 		utils, ses = mechsim.calc_expectations(batch = 10000)
 		self.assertTrue(
-			np.min(utils[0]) > 1,
+			np.max(utils[0]) < -1,
 			msg = 'Incorrectly calculates utilities'
 		)
 
@@ -154,11 +182,11 @@ class TestLocation(unittest.TestCase):
 		priv_mechsim = discrete.MedianLocationSimulator(n_players, locations, private = True)
 
 		# First, test that seeding works
-		_,_,inds,locs = mechsim.run_simulation(
+		_,_,_,inds,locs = mechsim.run_simulation(
 			batch = 1, samples_per_batch = 10000, seed = 110
 		)
 
-		_,_,inds2,locs2 = mechsim.run_simulation(
+		_,_,_,inds2,locs2 = mechsim.run_simulation(
 			batch = 1, samples_per_batch = 1, seed = 110
 		)
 
@@ -170,11 +198,11 @@ class TestLocation(unittest.TestCase):
 		)
 
 		# ...and again for private mechsim
-		_,_,inds,locs = priv_mechsim.run_simulation(
+		_,_,_,inds,locs = priv_mechsim.run_simulation(
 			batch = 1, samples_per_batch = 10000, seed = 110
 		)
 
-		_,_,inds2,locs2 = priv_mechsim.run_simulation(
+		_,_,_,inds2,locs2 = priv_mechsim.run_simulation(
 			batch = 1, samples_per_batch = 1, seed = 110
 		)
 
@@ -183,6 +211,16 @@ class TestLocation(unittest.TestCase):
 		)
 		np.testing.assert_array_almost_equal(
 			locs, locs2, err_msg = 'Inconsistent sampling from simulation method'
+		)
+
+		# And test that sampling is different with skewed dist
+		_,_,_,inds3,locs3 = priv_mechsim.run_simulation(
+			batch = 1000, samples_per_batch = 1, seed = 110, dist = 'skewed'
+		)
+		counts3 = np.bincount(inds3.flatten(), minlength = len(locations)).tolist()
+		self.assertEqual(
+			counts3, sorted(counts3),
+			msg = 'Skewed sampling does not pass through to run_simulation method'
 		)
 
 

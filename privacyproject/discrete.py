@@ -7,6 +7,10 @@ import itertools
 from scipy import stats
 
 
+def unif_to_log(x):
+	""" Helper function for profiling""" 
+	return -1*np.log(-1*np.log(x))
+
 def batched_bincount(x, minlength, axis = 0):
 	""" Batched bincount 
 	:param x: Numpy array of integers between 0 and minlength - 1
@@ -49,6 +53,9 @@ class MedianLocation():
 	"""
 
 	def __init__(self, n_players, locations, warn = False):
+
+		if not isinstance(n_players, int):
+			raise ValueError(f"n_players ({n_players}) must be int, not ({type(n_players)})")
 
 		self.n_players = n_players
 		self.locations = locations
@@ -121,7 +128,7 @@ class MedianLocation():
 
 		# Calc utils
 		if metric.lower() == 'l2':
-			return -1*np.sqrt((reported_locations - selection)**2)
+			return -1*np.sqrt((reported_locations - selection)**2) + 2
 		else:
 			raise ValueError('Currently metric {metric} is not supported')
 
@@ -153,10 +160,8 @@ class DiffPrivLoc(MedianLocation):
 		batch_shape = copy.copy(gumbel_shape)
 		gumbel_shape.append(self.L + 1)
 		gumbel_shape.append(self.L + 1)
-		noise = np.argmax(
-			log_noise_dist + np.random.gumbel(size = gumbel_shape),
-			axis = -1
-		)
+		gumbel_vals = unif_to_log(np.random.uniform(size = gumbel_shape).astype('float32'))
+		noise = np.argmax(log_noise_dist + gumbel_vals, axis = -1)
 
 		# Add to report counts
 		report_counts = batched_bincount(
@@ -195,9 +200,10 @@ class MedianLocationSimulator():
 	def __init__(self, n_players, locations, private = False):
 
 		# Initialization
-		self.n_players = np.array(n_players)
+		self.n_players = n_players
 		self.locations = np.array(locations)
 		self.L = self.locations.shape[0]
+		self.private = private
 
 		if private:
 			self.mechanism = DiffPrivLoc(n_players, locations, warn = True)
@@ -208,16 +214,40 @@ class MedianLocationSimulator():
 		self.cached_utils = None
 
 
-	def sample_locations(self, batch = 100):
+	def sample_locations(self, batch = 100, dist = 'uniform'):
 
-		selections = np.random.randint(low = 0, high = self.L,
-										size = (self.n_players, batch))
+		# Each location is equally likely
+		if dist == 'uniform':
+			selections = np.random.randint(low = 0, high = self.L,
+											size = (self.n_players, batch))
+
+		# Or not - skewed to the right
+		elif dist == 'skewed':
+
+			# Create skewed probabilities favoring locations to the right
+			probs = np.arange(0, self.L, 1) + 1
+			probs = probs**2
+			probs = probs/probs.sum()
+			logits = np.log(probs)
+			logits = np.repeat(logits, self.n_players * batch)
+			logits = logits.reshape(
+				self.L, self.n_players, batch
+			)
+
+			# Gumbel noise as usual
+			gumbel_values = np.random.gumbel(
+				size = (self.L, self.n_players, batch)
+			)
+
+			# Take maximums
+			selections = np.argmax(logits + gumbel_values, axis = 0)
+
 
 		locations = np.array([self.locations[selection] for selection in selections])
 
 		return selections, locations
 
-	def calc_expectations(self, batch = 1000, cache = True, **kwargs):
+	def calc_expectations(self, batch = 1000, cache = True, dist = 'uniform', **kwargs):
 		"""
 		Calculates the expected utility of reporting 'index'
 		given true location 'true_index' when all other reported 
@@ -231,7 +261,7 @@ class MedianLocationSimulator():
 		"""
 
 		# Sample many locations...
-		sample_inds, sample_locs = self.sample_locations(batch = batch)
+		sample_inds, sample_locs = self.sample_locations(batch = batch, dist = dist)
 		
 		# Initialize result
 		utils = np.zeros((self.L, self.L))
@@ -254,6 +284,9 @@ class MedianLocationSimulator():
 				utils[true_index][index] = dists.mean()
 				ses[true_index][index] = dists.std()/np.sqrt(batch)
 
+		# Make them all positive - add maximum pairwise dist
+		utils += 2
+
 		if cache:
 			if self.cached_utils is not None:
 				warnings.warn('Overwriting cached utils')
@@ -269,6 +302,7 @@ class MedianLocationSimulator():
 					   samples_per_batch = 1,
 					   seed = None,
 					   recalc_expecations = False,
+					   dist = 'uniform',
 					   **kwargs):
 		"""
 		:param proportion: The proportion of agents who care
@@ -296,26 +330,32 @@ class MedianLocationSimulator():
 		# Recall this is true location x other locations
 		if self.cached_utils is None or recalc_expecations:
 			self.calc_expectations(
-				batch = batch*samples_per_batch, cache = True, **kwargs
+				batch = batch*samples_per_batch, cache = True, 
+				dist = dist, **kwargs
 			)
 
 		# Create locations for each player batch times.
 		# This is an self.L x batch matrix
 		if seed is not None:
 			np.random.seed(seed)
-		sample_inds, sample_locs = self.sample_locations(batch = batch)
+		sample_inds, sample_locs = self.sample_locations(batch = batch, dist = dist)
 
-		# Create exponential strategies/distributions for them
-		strats = np.exp(alpha * self.cached_utils)
-		denom = np.expand_dims(strats.sum(axis = 1), axis = -1)
-		strats = strats/denom
+		# Create exponential strategies/distributions for them - 
+		# prevent overflows here
+		if alpha/np.log(self.L) >= 1e-2:
+			strats = np.exp(np.log(self.L)*self.cached_utils/alpha)
+			denom = np.expand_dims(strats.sum(axis = 1), axis = -1)
+			strats = strats/denom
+		else:
+			strats = np.eye(self.L)
+
 		# Find the corresponding strategies for each batch
 		batch_strats = strats[sample_inds]
 
 		# Find corresponding entropies for later analysis :)
 		
 		#entropies = -1*(strats * np.log(strats)).sum(axis = 0)
-		entropies = stats.entropy(strats.T)
+		entropies = stats.entropy(strats.T)/np.log(self.L)
 		batch_entropies = entropies[sample_inds]
 		batch_entropies = np.expand_dims(batch_entropies, axis = -1)
 
@@ -349,7 +389,7 @@ class MedianLocationSimulator():
 
 		# Calculate utilities
 		sample_locs = np.expand_dims(sample_locs, -1)
-		utilities = -1*np.sqrt((selections - sample_locs)**2)
+		utilities = -1*np.sqrt((selections - sample_locs)**2) + 2
 
 		return utilities, batch_entropies, selections, sample_inds, sample_locs
 
