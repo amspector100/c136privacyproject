@@ -1,6 +1,10 @@
 
 *.ipynb
 
+# Data and figures
+data/*
+figures/*
+
 
 # _____ R Defaults _______
 # History files
